@@ -210,12 +210,14 @@ async def audio_ws(websocket: WebSocket):
             rms, dbfs = rms_and_dbfs(waveform)
             print(f"[YAMNET] 분류 시작 sr={sr} len={waveform.size} dbfs={dbfs:.1f}")
             
+            is_danger_from_yamnet = False
             if DO_YAMNET:
                 result = await asyncio.to_thread(
                     classify_sound_with_confidence, waveform, sr
                 )
                 group_label = result.get("group_label", "unknown")
                 group_conf = float(result.get("group_conf", 0.0))
+                is_danger_from_yamnet = result.get("is_danger", False)
                 raw_idx = int(result.get("raw_idx", -1))
                 raw_label = str(result.get("raw_label", ""))
                 raw_conf = float(result.get("raw_conf", 0.0))
@@ -238,8 +240,8 @@ async def audio_ws(websocket: WebSocket):
         # === 전역 상태 업데이트 ===
         try:
             async with state_lock:
-                if 0 <= dir_norm < 360:
-                    last_direction = dir_norm
+                #if 0 <= dir_norm < 360:
+                #last_direction = dir_norm
                 last_group_label = group_label
                 last_group_conf = group_conf
                 last_raw_idx = raw_idx
@@ -304,19 +306,22 @@ async def audio_ws(websocket: WebSocket):
             log_exc("[AUDIO whisper path]", e)
         
         # === 위험/정보 브로드캐스트 ===
+# === 위험/정보 브로드캐스트 ===
         try:
-            significant = is_significant_group(group_label, group_conf, dbfs)
+            # is_significant_group의 결과와 YAMNet의 is_danger 결과를 'or'로 합칩니다.
+            significant = is_significant_group(group_label, group_conf, dbfs) or is_danger_from_yamnet
+            
             await broadcast_info(
                 direction=last_direction, group_label=group_label,
                 group_conf=group_conf, dbfs=dbfs,
                 ms=(VIBRATE_MS if significant else 0),
                 raw={"idx": raw_idx, "label": raw_label, "conf": raw_conf},
-                event=("danger" if significant else "info"),
+                event=("danger" if significant else "info"), # 'significant' 변수를 여기서 사용
                 source="yamnet"
             )
         except Exception as e:
             log_exc("[AUDIO broadcast_info]", e)
-    
+              
     # ====== 메인 루프 ======
     try:
         while True:

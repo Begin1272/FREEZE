@@ -20,7 +20,7 @@ DISABLE_DEBOUNCE      = os.getenv("DISABLE_DEBOUNCE", "false").lower() == "true"
 DEFAULT_ESP32_ID      = os.getenv("DEFAULT_ESP32_ID", "esp32-01")
 
 # ✅ 기본은 이벤트 미러링 끔(원하면 1로 켜기)
-MIRROR_EVENTS_TO_ESP  = os.getenv("MIRROR_EVENTS_TO_ESP", "1") in ("1", "true", "yes")
+MIRROR_EVENTS_TO_ESP  = os.getenv("MIRROR_EVENTS_TO_ESP", "0") in ("1", "true", "yes")
 
 # 🔧 ESP 호환키(direction/deg) 동시 송신 여부(기본 끔)
 ESP_COMPAT_KEYS       = os.getenv("ESP_COMPAT_KEYS", "0") in ("1", "true", "yes")
