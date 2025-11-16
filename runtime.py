@@ -20,7 +20,7 @@ DISABLE_DEBOUNCE      = os.getenv("DISABLE_DEBOUNCE", "false").lower() == "true"
 DEFAULT_ESP32_ID      = os.getenv("DEFAULT_ESP32_ID", "esp32-01")
 
 # ✅ 기본은 이벤트 미러링 끔(원하면 1로 켜기)
-MIRROR_EVENTS_TO_ESP  = os.getenv("MIRROR_EVENTS_TO_ESP", "0") in ("1", "true", "yes")
+MIRROR_EVENTS_TO_ESP  = os.getenv("MIRROR_EVENTS_TO_ESP", "1") in ("1", "true", "yes")
 
 # 🔧 ESP 호환키(direction/deg) 동시 송신 여부(기본 끔)
 ESP_COMPAT_KEYS       = os.getenv("ESP_COMPAT_KEYS", "0") in ("1", "true", "yes")
@@ -386,21 +386,28 @@ async def _broadcast_to_app_hub(payload: dict, topic: Optional[str] = None):
         else:
             payload[k] = _to_plain(v)
 
-    # 🔧 import 경로를 절대 경로 → 패키지 순으로 시도 (환경에 따라 다를 수 있어서)
-    try:
-        from routes.routes_ws import app_broadcast_json  # FREEZE/app.py 기준
-    except Exception:
-        try:
-            from .routes.routes_ws import app_broadcast_json  # freeze/runtime.py 기준 패키지
-        except Exception:
-            from freeze.routes.routes_ws import app_broadcast_json  # 모듈 이름이 freeze인 경우
+# ... numpy 변환 코드 바로 뒤 ...
 
     try:
+        # 1. routes.routes_ws.utils 에서 함수를 직접 임포트 (O - 여기에 함수가 있을 것임)
+        from routes.routes_ws.utils import app_broadcast_json
+        
+        # 2. 임포트 성공 후, 브로드캐스트 실행
         eff_topic = str(topic or payload.get("topic") or WS_TOPIC)
         await app_broadcast_json(eff_topic, payload)
-    except Exception as e:
-        clog("[APP broadcast error]", e)
 
+    except ImportError as e:
+        # 순환 임포트 등 문제 발생 시
+        clog(f"[APP broadcast error] 임포트 실패 (순환 참조 또는 함수 없음): {e}")
+    except Exception as e:
+        clog(f"[APP broadcast error] 전송 실패: {e}")
+
+    except ImportError as e:
+        # 순환 임포트 등 문제 발생 시
+        clog(f"[APP broadcast error] 임포트 실패 (순환 참조 가능성): {e}")
+    except Exception as e:
+        clog(f"[APP broadcast error] 전송 실패: {e}")
+        
 def _norm_direction(direction: Optional[int]) -> int:
     try:
         if direction is None:
