@@ -113,7 +113,7 @@ async def audio_ws(websocket: WebSocket):
         mode = websocket.query_params.get("mode", AUDIO_WS_DEFAULT_MODE).lower()
         
         # 🔥 디버그용: 모드와 상관없이 YAMNet + Whisper 둘 다 항상 켠다
-        DO_WHISPER = True
+        DO_WHISPER = False
         DO_YAMNET = True
         
         print(f"🎧 /ws/audio 연결됨 mode={mode} (whisper={DO_WHISPER}, yamnet={DO_YAMNET})")
@@ -309,7 +309,6 @@ async def audio_ws(websocket: WebSocket):
             log_exc("[AUDIO whisper path]", e)
         
         # === 위험/정보 브로드캐스트 ===
-# === 위험/정보 브로드캐스트 ===
         try:
             # is_significant_group의 결과와 YAMNet의 is_danger 결과를 'or'로 합칩니다.
             significant = is_significant_group(group_label, group_conf, dbfs) or is_danger_from_yamnet
