@@ -386,10 +386,8 @@ async def _broadcast_to_app_hub(payload: dict, topic: Optional[str] = None):
         else:
             payload[k] = _to_plain(v)
 
-# ... numpy 변환 코드 바로 뒤 ...
-
     try:
-        # 1. routes.routes_ws.utils 에서 함수를 직접 임포트 (O - 여기에 함수가 있을 것임)
+        # 1. routes.routes_ws.utils 에서 함수를 직접 임포트
         from routes.routes_ws.utils import app_broadcast_json
         
         # 2. 임포트 성공 후, 브로드캐스트 실행
@@ -402,17 +400,19 @@ async def _broadcast_to_app_hub(payload: dict, topic: Optional[str] = None):
     except Exception as e:
         clog(f"[APP broadcast error] 전송 실패: {e}")
 
-    except ImportError as e:
-        # 순환 임포트 등 문제 발생 시
-        clog(f"[APP broadcast error] 임포트 실패 (순환 참조 가능성): {e}")
-    except Exception as e:
-        clog(f"[APP broadcast error] 전송 실패: {e}")
         
 def _norm_direction(direction: Optional[int]) -> int:
     try:
         if direction is None:
             return -1
-        ang = int(direction) % 360
+        
+        ang = int(direction)
+        
+        # [FIX] 음수는 -1로 즉시 반환 (mod 연산 방지)
+        if ang < 0:
+            return -1
+            
+        ang = ang % 360
         if 0 <= ang < 360:
             return ang
     except Exception:
@@ -447,8 +447,8 @@ async def broadcast_info(
     transcript: Optional[str] = None,
     yolo: Optional[dict] = None,
     event: str = "info",
-    files: Optional[dict] = None,   # ex) {"snapshot_url": "...", "video_url": "..."}
-    source: Optional[str] = None,   # "yolo" | "yamnet" | "whisper"
+    files: Optional[dict] = None,
+    source: Optional[str] = None,
     strength: int = 100,
     topic: Optional[str] = None,
 ):
@@ -473,40 +473,82 @@ async def broadcast_info(
 
     # ---- 공통 payload ----
     eff_topic = str(topic or WS_TOPIC)
+    
+    # [FIX] 앱 팀 요구사항에 맞춘 기본 페이로드
     app_payload = {
         "type": "event",
         "topic": eff_topic,
         "ts": now_ms(),
         "event": ev,
         "source": source,
-        "direction": ang if ang is not None else -1,
-        "label": group_label,
-        "confidence": conf_val,
-        "dbfs": float(dbfs),
+        "danger": bool(ev == "danger"), # [REQ] YAMNet: danger (True/False)
         "ms": int(ms or 0),
         "angle": int(ang if ang is not None else -1),
+        "direction": ang if ang is not None else -1,
         "strength": int(strength),
     }
-    if raw is not None:
-        app_payload["raw"] = {
-            "idx": int(raw.get("idx", -1)),
-            "label": str(raw.get("label", "")),
-            "conf": float(raw.get("conf", 0.0)),
-        }
-    if transcript is not None:
-        app_payload["transcript"] = str(transcript)
-    if yolo is not None:
-        app_payload["yolo"] = yolo
-    if files is not None:
-        app_payload["files"] = files
+
+    # [FIX] 소스(source)에 따라 페이로드 구성 변경
+    
+    if source == "yamnet":
+        app_payload["label"] = raw.get("label", group_label) if raw else group_label # [REQ] YAMNet: 원본 label
+        app_payload["confidence"] = conf_val
+        app_payload["group"] = group_label # [REQ] YAMNet: 그룹
+        app_payload["dbfs"] = float(dbfs)
+        if raw is not None:
+            app_payload["raw"] = {
+                "idx": int(raw.get("idx", -1)),
+                "label": str(raw.get("label", "")),
+                "conf": float(raw.get("conf", 0.0)),
+            }
+
+    elif source == "yolo":
+        app_payload["label"] = group_label # (YOLO의 label)
+        app_payload["confidence"] = conf_val
+        if yolo is not None:
+            app_payload["yolo"] = yolo
+        
+        # [REQ] YOLO: files 딕셔너리를 file, thumbnail 키로 변환
+        if files is not None:
+            if files.get("file"):
+                app_payload["file"] = files.get("file")
+            if files.get("thumbnail"):
+                app_payload["thumbnail"] = files.get("thumbnail")
+            app_payload["files"] = files 
+
+    elif source == "whisper" or source == "clova":
+        app_payload["event"] = "transcript"
+        app_payload["label"] = group_label
+        app_payload["confidence"] = conf_val
+        app_payload["dbfs"] = float(dbfs)
+        if transcript is not None:
+            app_payload["transcript"] = str(transcript)
+
+    else:
+        # 기타 이벤트
+        app_payload["label"] = group_label
+        app_payload["confidence"] = conf_val
+        app_payload["dbfs"] = float(dbfs)
+        if raw is not None:
+            app_payload["raw"] = {
+                "idx": int(raw.get("idx", -1)),
+                "label": str(raw.get("label", "")),
+                "conf": float(raw.get("conf", 0.0)),
+            }
+        if transcript is not None:
+            app_payload["transcript"] = str(transcript)
+        if yolo is not None:
+            app_payload["yolo"] = yolo
+        if files is not None:
+            app_payload["files"] = files
 
     # 1) 앱 허브로 전파 (topic 반영)
     await _broadcast_to_app_hub(dict(app_payload), topic=eff_topic)
-
+    
     # 2) (옵션) ESP로 미러링(디버그): 모든 이벤트
     if MIRROR_EVENTS_TO_ESP and esp32_conns:
         esp_payload = dict(app_payload)
-        esp_payload["t"] = "event"  # 일반 이벤트임을 명시
+        esp_payload["t"] = "event"
         try:
             clog(f"[ESP->] mirror event={ev} angle={esp_payload['angle']} ids={esp32_list_ids()}")
             await esp32_broadcast_all(esp_payload)
@@ -515,7 +557,6 @@ async def broadcast_info(
 
     # 3) danger만 진동(엣지 + 쿨다운 + 최소 conf)
     if ev == "danger":
-        # 너무 낮은 conf면 스킵
         if conf_val < DANGER_MIN_CONF:
             clog(f"[VIBRATE] skip: conf<{DANGER_MIN_CONF} (conf={conf_val:.2f})")
             return
@@ -535,7 +576,6 @@ async def broadcast_info(
                 f"edge={allow_by_edge} cool={allow_by_cooldown} ids={esp32_list_ids()}"
             )
 
-            # 1) 새 방식: t="vibrate" 패킷
             ok = await esp32_vibrate_angle(
                 ms=final_ms,
                 angle_deg=final_angle,
@@ -544,7 +584,6 @@ async def broadcast_info(
             if not ok:
                 clog("[ESP32] vibrate send failed (not connected?)")
 
-            # 2) 옛날 방식 호환: t="danger" 최소 JSON도 같이 전송
             try:
                 await esp32_send_minimal_event(
                     event="danger",
@@ -554,7 +593,7 @@ async def broadcast_info(
             except Exception as e:
                 clog("[ESP32] min danger send error", e)
 
-            _last_danger_ts  = now
+            _last_danger_ts = now
             _last_danger_key = key
         else:
             clog(

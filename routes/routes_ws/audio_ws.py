@@ -184,7 +184,8 @@ async def audio_ws(websocket: WebSocket):
         except Exception as e:
             log_exc("[whisper broadcast]", e)
     
-    # ====== 파형 처리 ======
+ # audio_ws.py.txt 파일의 _process_waveform 함수를 통째로 교체하세요.
+
     async def _process_waveform(waveform: np.ndarray, sr: int, dir_in: int = -1):
         """프레임 처리: YAMNet + Whisper"""
         global last_direction, last_group_label, last_group_conf
@@ -240,8 +241,10 @@ async def audio_ws(websocket: WebSocket):
         # === 전역 상태 업데이트 ===
         try:
             async with state_lock:
-                #if 0 <= dir_norm < 360:
-                #last_direction = dir_norm
+                # 💥 1. 수정: 주석 해제 (dir_norm이 유효할 때 last_direction 업데이트)
+                if 0 <= dir_norm < 360:
+                    last_direction = dir_norm
+                
                 last_group_label = group_label
                 last_group_conf = group_conf
                 last_raw_idx = raw_idx
@@ -309,6 +312,101 @@ async def audio_ws(websocket: WebSocket):
 # === 위험/정보 브로드캐스트 ===
         try:
             # is_significant_group의 결과와 YAMNet의 is_danger 결과를 'or'로 합칩니다.
+            significant = is_significant_group(group_label, group_conf, dbfs) or is_danger_from_yamnet
+            
+            # 💥 2. 수정: direction=last_direction 대신 direction=dir_norm 사용
+            # (dir_norm이 -1이면 runtime.py가 알아서 last_direction을 사용하므로 안전합니다)
+            await broadcast_info(
+                direction=dir_norm, group_label=group_label,
+                group_conf=group_conf, dbfs=dbfs,
+                ms=(VIBRATE_MS if significant else 0),
+                raw={"idx": raw_idx, "label": raw_label, "conf": raw_conf},
+                event=("danger" if significant else "info"), # 'significant' 변수를 여기서 사용
+                source="yamnet"
+            )
+        except Exception as e:
+            log_exc("[AUDIO broadcast_info]", e)
+        
+        # 방향 정규화
+        try:
+            dir_norm = (int(dir_in) % 360) if int(dir_in) >= 0 else -1
+        except Exception:
+            dir_norm = -1
+        
+        # === 전역 상태 업데이트 ===
+        try:
+            async with state_lock:
+                # [FIX] 각도 덮어쓰기 방지 (주석 처리됨)
+                #if 0 <= dir_norm < 360:
+                #    last_direction = dir_norm
+                
+                # [FIX] IndentationError (들여쓰기 오류) 수정됨
+                last_group_label = group_label
+                last_group_conf = group_conf
+                last_raw_idx = raw_idx
+                last_raw_label = raw_label
+                last_raw_conf = raw_conf
+                last_energy_rms = rms
+                last_dbfs = dbfs
+                last_updated_ms = now_ms()
+        except Exception as e:
+            log_exc("[AUDIO state_lock]", e)
+        
+        # === Whisper (음성일 때만) ===
+        try:
+            vad_ok = False
+            if waveform is not None and getattr(waveform, "size", 0) > 0:
+                vad_ok = vad_is_speech_int16(waveform.astype(np.int16).tobytes(), sr)
+            
+            if DO_WHISPER and vad_ok and gate_is_speech(dbfs, raw_label, raw_conf, group_label, group_conf):
+                acc.add(waveform, sr)
+                if acc.ready():
+                    wav_for_whisper = acc.flush_wav()
+                    dur = wav_dur_sec(wav_for_whisper) if wav_for_whisper else 0.0
+                    
+                    # 오디오 저장
+                    if SAVE_AUDIO:
+                        try:
+                            if len(_audio_ring) == 0 and wav_for_whisper:
+                                out_bytes = wav_for_whisper
+                                out_sr = int(sr or _audio_ring_sr or RAW_SR)
+                            else:
+                                out_sr = int(_audio_ring_sr or RAW_SR)
+                                cap = _ring_cap_bytes(out_sr)
+                                ring = bytes(_audio_ring[-cap:]) if len(_audio_ring) >= cap else bytes(_audio_ring)
+                                bio = io.BytesIO()
+                                with wave.open(bio, "wb") as w:
+                                    w.setnchannels(1)
+                                    w.setsampwidth(2)
+                                    w.setframerate(out_sr)
+                                    w.writeframes(ring)
+                                out_bytes = bio.getvalue()
+                            
+                            last_path = f"{AUDIO_OUT_DIR}/last_in.wav"
+                            with open(last_path, "wb") as f:
+                                f.write(out_bytes)
+                            
+                            if SAVE_AUDIO_TS:
+                                ts_name = f"in_{int(time.time()*1000)}.wav"
+                                with open(f"{AUDIO_OUT_DIR}/{ts_name}", "wb") as f:
+                                    f.write(out_bytes)
+                            
+                            print(f"[AUDIO][SAVE] {last_path} (≈{SAVE_AUDIO_LEN_SEC:.1f}s, sr={out_sr})")
+                        except Exception as e:
+                            log_exc("[AUDIO save wav]", e)
+                    
+                    # Whisper 실행
+                    if wav_for_whisper and dur >= 0.8:
+                        if WHISPER_ASYNC:
+                            asyncio.create_task(run_whisper_once(wav_for_whisper))
+                        else:
+                            await run_whisper_once(wav_for_whisper)
+        except Exception as e:
+            log_exc("[AUDIO whisper path]", e)
+        
+        # === 위험/정보 브로드캐스트 ===
+        try:
+            # [FIX] is_significant_group의 결과와 YAMNet의 is_danger 결과를 'or'로 합칩니다.
             significant = is_significant_group(group_label, group_conf, dbfs) or is_danger_from_yamnet
             
             await broadcast_info(
@@ -397,6 +495,8 @@ async def audio_ws(websocket: WebSocket):
                     except Exception as e:
                         log_exc("[AUDIO canonical BIN adapt]", e)
                         waveform = None
+# audio_ws.py 파일의 RAW fallback 부분을 교체하세요. (108~111행 근처)
+
                 else:
                     # RAW fallback
                     bbuf.extend(b)
@@ -410,9 +510,18 @@ async def audio_ws(websocket: WebSocket):
                         
                         wf = np.frombuffer(frame_bytes, dtype=np.int16)
                         print(f"[AUDIO][RAW] 프레임 len={wf.size}")
-                        
+                    
                         _ring_append_int16(wf, RAW_SR, frame_ms=RAW_FRAME_MS)
-                        await _process_waveform(wf, RAW_SR, dir_in=-1)
+                        
+                        # 💥 수정: dir_in=-1 하드코딩 대신, 현재 state_lock의 last_direction을 읽어옵니다.
+                        current_dir = -1
+                        try:
+                            async with state_lock:
+                                current_dir = last_direction
+                        except Exception as e:
+                            log_exc("[AUDIO raw dir read]", e)
+                            
+                        await _process_waveform(wf, RAW_SR, dir_in=current_dir)
                     
                     continue
             

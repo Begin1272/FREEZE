@@ -88,15 +88,20 @@ async def _publish_snapshot(
 ):
     """스냅샷 앱으로 브로드캐스트"""
     try:
-        files = {}
-        if file_name:
-            files["snapshot_url"] = file_url(file_name)
+        snap_url = file_url(file_name) if file_name else None
         
+        # [FIX] App SDK 스키마에 맞게 'file', 'thumbnail' 사용
+        files = {}
+        if snap_url:
+            files["file"] = snap_url
+            files["thumbnail"] = snap_url
+            
         payload = {
             "type": "snapshot",
             "source": "yolo",
             "ts": now_ms(),
-            "file": (file_url(file_name) if file_name else None),
+            "file": snap_url,
+            "thumbnail": snap_url,
             "time": (ts_sec if ts_sec is not None else int(time.time())),
             "direction": last_direction,
             "group_label": last_group_label,
@@ -176,6 +181,9 @@ class Recorder:
             video_url = file_url(name)
             epoch_sec = int(time.time())
             
+            # [FIX] App SDK 스키마: 'file' 키 사용
+            files_dict = {"file": video_url}
+            
             # 브로드캐스트
             asyncio.create_task(broadcast_info(
                 direction=last_direction, group_label=last_group_label,
@@ -183,13 +191,13 @@ class Recorder:
                 raw={"idx": last_raw_idx, "label": last_raw_label, "conf": last_raw_conf},
                 transcript=last_transcript,
                 event="recording_started", source="yolo",
-                files={"video_url": video_url}
+                files=files_dict
             ))
             
             asyncio.create_task(app_broadcast_json(self.topic, {
                 "type": "recording_started", "source": "yolo", "ts": now_ms(),
                 "file": video_url, "time": epoch_sec,
-                "files": {"video_url": video_url},
+                "files": files_dict,
                 "direction": last_direction, "group_label": last_group_label,
                 "group_conf": last_group_conf, "dbfs": last_dbfs,
                 "raw": {"idx": last_raw_idx, "label": last_raw_label, "conf": last_raw_conf},
@@ -256,16 +264,19 @@ class Recorder:
                 video_url = file_url(name)
                 epoch_sec = int(time.time())
                 
+                # [FIX] App SDK 스키마: 'file' 키 사용
+                files_dict = {"file": video_url}
+                
                 asyncio.create_task(broadcast_info(
                     direction=last_direction, group_label="yolo_recording_done",
                     group_conf=1.0, dbfs=last_dbfs, ms=0, event="info",
-                    files={"video_url": video_url}, source="yolo"
+                    files=files_dict, source="yolo"
                 ))
                 
                 asyncio.create_task(app_broadcast_json(self.topic, {
                     "type": "recording_done", "source": "yolo", "ts": now_ms(),
                     "file": video_url, "time": epoch_sec,
-                    "files": {"video_url": video_url}
+                    "files": files_dict
                 }))
                 
                 # 비디오 스트리밍 (옵션)
@@ -376,12 +387,16 @@ async def ws_camera(ws: WebSocket):
                     await _publish_snapshot(topic, snap_jpg, snap_path, snap_name, ts_sec)
                     if snap_name and ts_sec:
                         snap_url = file_url(snap_name)
+                        
+                        # [FIX] App SDK 스키마: 'file', 'thumbnail' 사용
+                        files_dict = {"file": snap_url, "thumbnail": snap_url}
+                        
                         asyncio.create_task(broadcast_info(
                             direction=last_direction, group_label=last_group_label,
                             group_conf=last_group_conf, dbfs=last_dbfs,
                             raw={"idx": last_raw_idx, "label": last_raw_label, "conf": last_raw_conf},
                             event="snapshot", source="yolo",
-                            files={"snapshot_url": snap_url}
+                            files=files_dict
                         ))
             except Exception as e:
                 log_exc("[CAM snapshot]", e)
